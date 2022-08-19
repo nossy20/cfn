@@ -1,0 +1,72 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: develop account create actionrole
+
+Parameters:
+  RepoArn:
+    Type: String
+    Description: CodeCommit repository Arn
+  ProductionAccountId:
+    Type: String
+    Description: Production account ID
+    MaxLength: 12
+    MinLength: 12
+  S3BucketProductionArtifactARN:
+    Description: Production account S3 Bucket ARN for Artifact
+    Type: String
+  CmkArn:
+    Description: Production account CMK ARN
+    Type: String
+
+Resources:
+  # IAM Role
+  ActionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS:
+                - !Sub arn:aws:iam::${ProductionAccountId}:root # TODO: 詳細設定されたい
+            Action:
+              - sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: !Join
+            - "-"
+            - - !Ref AWS::StackName
+              - !Select [2, !Split ["/", !Ref AWS::StackId]]
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:*
+                Resource:
+                  - !Sub ${S3BucketProductionArtifactARN}/*
+              - Effect: Allow
+                Action:
+                  - kms:DescribeKey
+                  - kms:GenerateDataKey*
+                  - kms:Encrypt
+                  - kms:ReEncrypt*
+                  - kms:Decrypt
+                Resource:
+                  - !Ref CmkArn
+              - Effect: Allow
+                Action:
+                  - codecommit:GetBranch
+                  - codecommit:GetCommit
+                  - codecommit:UploadArchive
+                  - codecommit:GetUploadArchiveStatus
+                  - codecommit:CancelUploadArchive
+                Resource:
+                  - !Ref RepoArn
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSAppRunnerServicePolicyForECRAccess
+
+Outputs:
+  ActionRoleArn:
+    Value: !GetAtt ActionRole.Arn
+    Description: ActionRoleArn

@@ -1,0 +1,198 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: develop account pipeline
+
+Parameters:
+  RepositoryName:
+    Type: String
+    Description: Specify the repository name
+  BranchName:
+    Type: String
+    Description: Specify the branch name
+    AllowedValues: [master, develop]
+  Runtime:
+    Type: String
+    Description: https://docs.aws.amazon.com/ja_jp/codebuild/latest/userguide/runtime-versions.html
+    AllowedValues: [golang116, golang117]
+  BuildspecName:
+    Type: String
+    Description: Specify the Buildspec filename
+    Default: buildspec.yaml
+  NotifiArn:
+    Type: String
+    Description: destination chatbot arn for pipeline notifications
+  PipelineName:
+    Type: String
+    Description: "${PipelineName}-${UUID}"
+    Default: pipeline
+
+Mappings:
+  # Runtimeに対応するイメージ名を列挙する
+  BuildSetting:
+    golang116:
+      image: aws/codebuild/standard:5.0 # golang1.16 image
+    golang117:
+      image: XXXXXXXXXXXX.dkr.ecr.ap-northeast-1.amazonaws.com/codebuild-custom-img:latest # カスタムイメージ
+
+Resources:
+  # S3
+  PipelineArtifactsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules: [{ ExpirationInDays: 1, Status: Enabled }]
+  # CodePipeline
+  Pipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      ArtifactStore:
+        Location: !Ref PipelineArtifactsBucket
+        Type: S3
+      RestartExecutionOnUpdate: false
+      RoleArn: !GetAtt CodePipelineServiceRole.Arn
+      Name:
+        Fn::Join:
+          - "-"
+          - - !Ref PipelineName
+            - !Select [2, !Split ["/", !Ref AWS::StackId]]
+      Stages:
+        - Name: pull
+          Actions:
+            - Name: codecommit
+              ActionTypeId:
+                Category: Source
+                Provider: CodeCommit
+                Owner: AWS
+                Version: 1
+              Configuration:
+                RepositoryName: !Ref RepositoryName
+                BranchName: !Ref BranchName
+                PollForSourceChanges: true
+              OutputArtifacts:
+                - Name: SourceArtifact
+        - Name: run
+          Actions:
+            - Name: build
+              ActionTypeId:
+                Category: Build
+                Provider: CodeBuild
+                Owner: AWS
+                Version: 1
+              Configuration:
+                ProjectName: !Ref BuildProject
+              InputArtifacts:
+                - Name: SourceArtifact
+              OutputArtifacts:
+                - Name: BuildArtifact
+  # CodeBuild
+  BuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      ServiceRole: !GetAtt CodeBuildServiceRole.Arn
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: !Ref BuildspecName
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: !FindInMap [BuildSetting, !Ref Runtime, image]
+        ImagePullCredentialsType: CODEBUILD
+        Type: LINUX_CONTAINER
+        PrivilegedMode: true
+      TimeoutInMinutes: 30
+      LogsConfig:
+        CloudWatchLogs:
+          GroupName:
+            Fn::Join:
+              - ""
+              - - "/code-build/log/xxxxxx/" # TODO: 名付け
+                - !Select [2, !Split ["/", !Ref AWS::StackId]]
+          Status: ENABLED
+  # CloudWatch
+  CodeBuildLog:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName:
+        Fn::Join:
+          - ""
+          - - "/code-build/log/xxxxxx/" # TODO: 名付け
+            - !Select [2, !Split ["/", !Ref AWS::StackId]]
+      RetentionInDays: 30
+  # Notification
+  Notification:
+    Type: AWS::CodeStarNotifications::NotificationRule
+    Properties:
+      DetailType: BASIC
+      EventTypeIds:
+        - codepipeline-pipeline-pipeline-execution-succeeded
+        - codepipeline-pipeline-pipeline-execution-failed
+      Name:
+        Fn::Join:
+          - "-"
+          - - !Ref PipelineName
+            - !Select [2, !Split ["/", !Ref AWS::StackId]]
+      Resource:
+        Fn::Join:
+          - ":"
+          - - "arn:aws:codepipeline"
+            - !Ref AWS::Region
+            - !Ref AWS::AccountId
+            - !Ref Pipeline
+      Status: ENABLED
+      Targets:
+        - TargetAddress: !Ref NotifiArn
+          TargetType: AWSChatbotSlack
+  # IAM Role
+  CodePipelineServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codepipeline.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AWSCodePipelineFullAccess
+        - arn:aws:iam::aws:policy/AWSCodeBuildDeveloperAccess
+        - arn:aws:iam::aws:policy/AmazonS3FullAccess
+        - arn:aws:iam::aws:policy/AWSCodeCommitFullAccess
+  # IAM Role
+  CodeBuildServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: AllowUpdateServiceRole
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Action:
+                  - iam:AttachRolePolicy
+                  - iam:CreateRole
+                  - iam:PutRolePolicy
+                Effect: Allow
+                Resource: arn:aws:iam::*:role/*
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AWSCodeBuildDeveloperAccess
+        - arn:aws:iam::aws:policy/AmazonS3FullAccess
+        - arn:aws:iam::aws:policy/CloudWatchLogsFullAccess
+        - arn:aws:iam::aws:policy/AWSCloudFormationFullAccess
+        - arn:aws:iam::aws:policy/AWSCodeCommitReadOnly
+        - arn:aws:iam::aws:policy/service-role/AWSAppRunnerServicePolicyForECRAccess
+        - arn:aws:iam::aws:policy/IAMReadOnlyAccess
+        - arn:aws:iam::aws:policy/AWSLambda_FullAccess
+        - arn:aws:iam::aws:policy/CloudWatchEventsFullAccess
+        - arn:aws:iam::aws:policy/AWSAppSyncAdministrator

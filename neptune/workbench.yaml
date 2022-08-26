@@ -1,0 +1,203 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: A template to deploy Neptune Notebooks using CloudFormation resources
+
+# ------------------------------------------------------------
+# Parameters
+# ------------------------------------------------------------
+Parameters:
+  NeptuneWorkbenchSecurityGroupId:
+    Description: "SG for NeptuneWorkbench"
+    Type: String
+  NotebookInstanceName:
+    Description: 'NeptuneNotebook Instance Name (Must start with "aws-neptune-")'
+    Type: String
+  NotebookInstanceType:
+    Description: >-
+      SageMaker Notebook instance type. Please refer
+      https://aws.amazon.com/sagemaker/pricing/ for uptodate allowed instance
+      type in aws region and https://aws.amazon.com/neptune/pricing/ for
+      pricing.
+    Type: String
+    Default: ml.t3.medium
+    AllowedValues:
+      - ml.t3.medium
+      - ml.t3.large
+      - ml.t3.xlarge
+      - ml.t3.2xlarge
+      - ml.m4.xlarge
+      - ml.m4.2xlarge
+      - ml.m4.4xlarge
+      - ml.m4.10xlarge
+      - ml.m4.16xlarge
+      - ml.m5.xlarge
+      - ml.m5.2xlarge
+      - ml.m5.4xlarge
+      - ml.m5.12xlarge
+      - ml.m5.24xlarge
+      - ml.c4.large
+      - ml.c4.xlarge
+      - ml.c4.2xlarge
+      - ml.c4.4xlarge
+      - ml.c4.8xlarge
+      - ml.c5.xlarge
+      - ml.c5.2xlarge
+      - ml.c5.4xlarge
+      - ml.c5.9xlarge
+      - ml.c5.18xlarge
+      - ml.c5d.xlarge
+      - ml.c5d.2xlarge
+      - ml.c5d.4xlarge
+      - ml.c5d.9xlarge
+      - ml.c5d.18xlarge
+      - ml.p3.2xlarge
+      - ml.p3.8xlarge
+      - ml.p3.16xlarge
+      - ml.p2.2xlarge
+      - ml.p2.8xlarge
+      - ml.p2.16xlarge
+  NotebookInstanceConfigName:
+    Description: "NeptuneNotebook Instance Config Name"
+    Type: String
+  NeptuneLoadFromS3RoleArn:
+    Description: "NeptuneLoadFromS3Role ARN"
+    Type: String
+  NotebookInstanceSubnet:
+    Description: "NeptuneNotebook Instance Subnet"
+    Type: AWS::EC2::Subnet::Id
+  NeptuneClusterEndpoint:
+    Description: "NeptuneCluster Endpoint"
+    Type: String
+  NeptuneClusterPort:
+    Description: "NeptuneCluster Port"
+    Default: 8182
+    Type: String
+  NeptuneClusterResourceId:
+    Description: "NeptuneCluster ResourceId"
+    Default: "cluster-xxxxxxxxxxxxxxxxxxxxxxxxx"
+    Type: String
+
+# ------------------------------------------------------------
+# Resources
+# ------------------------------------------------------------
+Resources:
+  # ------------------------------------------------------------
+  # ExecutionRole WorkbenchにアタッチするIAMロール
+  # ------------------------------------------------------------
+  ExecutionRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - sagemaker.amazonaws.com
+            Action:
+              - "sts:AssumeRole"
+      Path: /
+      Policies:
+        - PolicyName: SagemakerNotebookNeptunePolicy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "cloudwatch:PutMetricData"
+                Resource: !Sub >-
+                  arn:${AWS::Partition}:cloudwatch:${AWS::Region}:${AWS::AccountId}:*
+              - Effect: Allow
+                Action:
+                  - "logs:CreateLogGroup"
+                  - "logs:CreateLogStream"
+                  - "logs:DescribeLogStreams"
+                  - "logs:PutLogEvents"
+                  - "logs:GetLogEvents"
+                Resource: !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:*"
+              - Effect: Allow
+                Action: "neptune-db:*"
+                Resource: !Sub >-
+                  arn:${AWS::Partition}:neptune-db:${AWS::Region}:${AWS::AccountId}:${NeptuneClusterResourceId}/*
+              - Effect: Allow
+                Action:
+                  - "s3:Put*"
+                  - "s3:Get*"
+                  - "s3:List*"
+                Resource: !Sub "arn:${AWS::Partition}:s3:::*"
+              - Effect: Allow
+                Action: "execute-api:Invoke"
+                Resource: !Sub >-
+                  arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:*/*
+              - Effect: Allow
+                Action:
+                  - "sagemaker:CreateModel"
+                  - "sagemaker:CreateEndpointConfig"
+                  - "sagemaker:CreateEndpoint"
+                  - "sagemaker:DescribeModel"
+                  - "sagemaker:DescribeEndpointConfig"
+                  - "sagemaker:DescribeEndpoint"
+                  - "sagemaker:DeleteModel"
+                  - "sagemaker:DeleteEndpointConfig"
+                  - "sagemaker:DeleteEndpoint"
+                Resource: !Sub >-
+                  arn:${AWS::Partition}:sagemaker:${AWS::Region}:${AWS::AccountId}:*/*
+
+  # ------------------------------------------------------------
+  # LifecycleConfig SageMakerのライフサイクル設定
+  # neptuneのデフォルトをコピペ
+  # ------------------------------------------------------------
+  NeptuneNotebookInstanceLifecycleConfig:
+    Type: "AWS::SageMaker::NotebookInstanceLifecycleConfig"
+    Properties:
+      NotebookInstanceLifecycleConfigName: !Ref NotebookInstanceConfigName
+      OnStart:
+        - Content: !Base64
+            "Fn::Join":
+              - ""
+              - - |
+                  #!/bin/bash
+                - |+
+                  sudo -u ec2-user -i <<'EOF'
+                - |
+                  echo "export GRAPH_NOTEBOOK_AUTH_MODE=DEFAULT" >> ~/.bashrc
+                - echo "export GRAPH_NOTEBOOK_HOST=
+                - !Ref NeptuneClusterEndpoint
+                - |
+                  " >> ~/.bashrc
+                - echo "export GRAPH_NOTEBOOK_PORT=
+                - !Ref NeptuneClusterPort
+                - |
+                  " >> ~/.bashrc
+                - echo "export NEPTUNE_LOAD_FROM_S3_ROLE_ARN=
+                - !Ref NeptuneLoadFromS3RoleArn
+                - |
+                  " >> ~/.bashrc
+                - echo "export AWS_REGION=
+                - !Ref "AWS::Region"
+                - |+
+                  " >> ~/.bashrc
+                - "aws s3 cp s3://"
+                - "aws-neptune-notebook"
+                - |
+                  /graph_notebook.tar.gz /tmp/graph_notebook.tar.gz
+                - |
+                  rm -rf /tmp/graph_notebook
+                - |
+                  tar -zxvf /tmp/graph_notebook.tar.gz -C /tmp
+                - |+
+                  /tmp/graph_notebook/install.sh
+                - EOF
+  # ------------------------------------------------------------
+  # Notebook Instance
+  # ------------------------------------------------------------
+  NeptuneNotebookInstance:
+    Type: "AWS::SageMaker::NotebookInstance"
+    Properties:
+      InstanceType: !Ref NotebookInstanceType
+      NotebookInstanceName: !Ref NotebookInstanceName
+      DirectInternetAccess: Disabled
+      SubnetId: !Ref NotebookInstanceSubnet
+      SecurityGroupIds:
+        - !Ref NeptuneWorkbenchSecurityGroupId
+      RoleArn: !GetAtt ExecutionRole.Arn
+      LifecycleConfigName: !Ref NotebookInstanceConfigName

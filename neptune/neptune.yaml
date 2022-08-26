@@ -1,0 +1,127 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+# ------------------------------------------------------------
+# Input Parameters
+# ------------------------------------------------------------
+Parameters:
+  Environment:
+    Type: String
+    Default: develop
+    AllowedValues:
+      - develop
+      - production
+  VpcdbSubnet1:
+    Type: String
+    Description: VpcdbSubnet1
+  VpcdbSubnet2:
+    Type: String
+    Description: VpcdbSubnet2
+  NeptuneSecurityGroupId:
+    Type: String
+    Description: NeptuneSecurityGroupId
+  NeptuneDbInstanceClass:
+    Type: String
+    Description: NeptuneDbInstanceClass
+
+# ------------------------------------------------------------
+# Conditions
+# ------------------------------------------------------------
+Conditions:
+  # Environmentパラメータがdevelopと等しい場合にのみリソースを作成する条件
+  IsDevelop: !Equals
+    - !Ref Environment
+    - develop
+
+# ------------------------------------------------------------
+# Resources
+# ------------------------------------------------------------
+Resources:
+  # ------------------------------------------------------------
+  # NeptuneClusterParams
+  # ------------------------------------------------------------
+  ClusterParams:
+    Type: "AWS::Neptune::DBClusterParameterGroup"
+    Properties:
+      Description: Cluster parameter group
+      Family: neptune1
+      Parameters:
+        neptune_enable_audit_log: "1" # 監査ログを有効化
+        neptune_streams: "1" # neptune streams を有効化
+  # ------------------------------------------------------------
+  # NeptuneDbParams
+  # ------------------------------------------------------------
+  DbParams:
+    Type: "AWS::Neptune::DBParameterGroup"
+    Properties:
+      Description: Db parameter group
+      Family: neptune1
+      Parameters:
+        neptune_query_timeout: 120000 # neptuneクエリのタイムアウトを2分に設定(ミリ秒)
+  # ------------------------------------------------------------
+  # NeptuneClusterSubnets
+  # ------------------------------------------------------------
+  NeptuneClusterSubnets:
+    Type: "AWS::Neptune::DBSubnetGroup"
+    Properties:
+      DBSubnetGroupDescription: Subnets for NeptuneCluster database
+      SubnetIds:
+        - !Ref VpcdbSubnet1
+        - !Ref VpcdbSubnet2
+  # ------------------------------------------------------------
+  # NeptuneCluster
+  # ------------------------------------------------------------
+  NeptuneCluster:
+    Type: "AWS::Neptune::DBCluster"
+    UpdateReplacePolicy: Snapshot
+    DeletionPolicy: Retain
+    Properties:
+      DBClusterIdentifier: !Join
+        - "-"
+        - - NeptuneCluster
+          - !Select [2, !Split ["/", !Ref AWS::StackId]]
+      DBClusterParameterGroupName: !Ref ClusterParams
+      DBSubnetGroupName: !Ref NeptuneClusterSubnets
+      DeletionProtection: !If [IsDevelop, false, true]
+      StorageEncrypted: true
+      VpcSecurityGroupIds:
+        - !Ref NeptuneSecurityGroupId
+      BackupRetentionPeriod: !If [IsDevelop, 1, 7] # 自動バックアップ期間を1日(検証環境),7日(本番環境)に設定
+  # ------------------------------------------------------------
+  # NeptuneClusterInstance
+  # ------------------------------------------------------------
+  NeptuneClusterInstance:
+    Type: "AWS::Neptune::DBInstance"
+    DeletionPolicy: Retain
+    Properties:
+      DBInstanceClass: !Ref NeptuneDbInstanceClass
+      # https://aws.amazon.com/jp/neptune/pricing/
+      AutoMinorVersionUpgrade: true
+      DBClusterIdentifier: !Ref NeptuneCluster
+      DBParameterGroupName: !Ref DbParams
+
+# ------------------------------------------------------------
+# Outputs
+# ------------------------------------------------------------
+Outputs:
+  NeptuneClusterReadAddress:
+    Description: Neptune Cluster Read Address
+    Value: !Join
+      - ""
+      - - !GetAtt
+          - NeptuneCluster
+          - ReadEndpoint
+        - ":"
+        - !GetAtt
+          - NeptuneCluster
+          - Port
+  NeptuneClusterWriteAddress:
+    Description: Neptune Cluster Write Address
+    Value: !Join
+      - ""
+      - - !GetAtt
+          - NeptuneCluster
+          - Endpoint
+        - ":"
+        - !GetAtt
+          - NeptuneCluster
+          - Port
